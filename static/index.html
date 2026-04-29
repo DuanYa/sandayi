@@ -1,0 +1,84 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>三打一扑克</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="lobby" class="screen active">
+    <div class="lobby-container">
+      <h1 class="title">三打一</h1>
+      <p class="subtitle">一庄三闲 · 实时扑克游戏</p>
+      <div class="lobby-form">
+        <input id="nameInput" placeholder="输入昵称" maxlength="10" value="玩家" />
+        <input id="roomInput" placeholder="房间号，留空可先创建" maxlength="8" />
+        <button id="createBtn" class="btn btn-primary">创建房间</button>
+        <button id="joinBtn" class="btn btn-play">加入房间</button>
+      </div>
+      <div id="lobbyMsg" class="msg"></div>
+    </div>
+  </div>
+
+  <div id="waiting" class="screen">
+    <div class="waiting-container">
+      <h2>房间：<span id="roomIdDisplay"></span></h2>
+      <div class="seats-preview" id="waitingSeats"></div>
+      <div class="ai-options">
+        <label for="aiModelSelect">AI 模型</label>
+        <select id="aiModelSelect">
+          <option value="rule">规则 AI</option>
+          <option value="transformer">Transformer 强化学习 AI</option>
+        </select>
+      </div>
+      <div class="waiting-actions">
+        <button id="aiBtn" class="btn btn-pass">按所选模型添加 AI 补齐</button>
+        <button id="startBtn" class="btn btn-primary">开始游戏</button>
+      </div>
+      <div id="waitingMsg" class="msg"></div>
+    </div>
+  </div>
+
+  <div id="gameScreen" class="screen">
+    <div class="game-info-bar">
+      <span>房间：<b id="gRoom"></b></span>
+      <span>阶段：<b id="gPhase"></b></span>
+      <span>当前：<b id="gTurn"></b></span>
+      <span>庄家：<b id="gBanker"></b></span>
+      <span>主牌：<b id="gTrump"></b></span>
+      <span>庄/闲得分：<b id="gScore"></b></span>
+      <span>本局叫分：<b id="gBid"></b></span>
+      <button id="restartBtn" class="btn btn-primary btn-small">重新开始</button>
+      <button id="backLobbyBtn" class="btn btn-restart">返回大厅</button>
+    </div>
+
+    <div class="player-area top" id="seatTop"></div>
+    <div class="player-area left" id="seatLeft"></div>
+    <div class="player-area right" id="seatRight"></div>
+
+    <div class="play-zone">
+      <div id="playedCards" class="played-cards"></div>
+      <div id="actionLabel" class="action-label"></div>
+    </div>
+
+    <div class="player-area bottom" id="seatBottom">
+      <div id="myLabel" class="player-label"></div>
+      <div id="actions" class="action-buttons hand-actions"></div>
+      <div id="hand" class="my-hand"></div>
+    </div>
+
+    <div class="game-log" id="log"></div>
+  </div>
+
+  <div id="resultDialog" class="dialog hidden">
+    <div class="dialog-content result-content">
+      <h2 id="resultTitle">本局结束</h2>
+      <pre id="resultBody"></pre>
+      <button id="closeResultBtn" class="btn btn-primary">关闭</button>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
