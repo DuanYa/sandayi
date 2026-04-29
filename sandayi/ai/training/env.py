@@ -223,16 +223,16 @@ class SandayiSelfPlayEnv:
         banker_id = self.game.state.banker_id
         winner_side = self.game.state.winner_side
         multiplier = result.get("multiplier", 1)
-        severity = 1.0 + 0.2 * (multiplier - 1)
+        severity = 1.0 + 0.15 * (multiplier - 1)
         for player in self.game.state.players:
             is_banker = player.id == banker_id
             if loser_id:
-                rewards[player.id] = -1.5 if player.id == loser_id else -0.3
+                rewards[player.id] = -1.5 if player.id == loser_id else -1.0
             else:
                 side = "banker" if is_banker else "farmers"
                 won = winner_side == side or winner_side == player.id
                 if is_banker:
-                    rewards[player.id] = 1.5 * severity if won else -1.0 * severity
+                    rewards[player.id] = 1.5 * severity if won else -0.8 * severity
                 else:
                     rewards[player.id] = 0.5 * severity if won else -0.5 * severity
         return rewards
