@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import importlib.util
 import logging
@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any, Protocol
 
-from sandayi.ai.features import ACTION_SIZE, CARD_RANK_VALUE, CARD_VOCAB, CARD_TO_ID, SCALAR_SIZE, SUIT_ORDER, encode_state
+from sandayi.ai.features import ACTION_SIZE, BID_ACTIONS, CARD_RANK_VALUE, CARD_VOCAB, CARD_TO_ID, SCALAR_SIZE, SUIT_ACTIONS, SUIT_ORDER, action_to_bid, action_to_suit, bid_to_action, card_to_action, encode_state, suit_to_action
 from sandayi.ai.network import create_policy_model
 
 logger = logging.getLogger(__name__)
@@ -122,12 +122,26 @@ class TransformerRLStrategy:
 
     def decide(self, state: dict[str, Any]) -> dict[str, Any] | None:
         legal = state.get("legal_actions", {})
-        if legal.get("type") != "play" or not legal.get("cards") or self.model is None or self.torch is None:
+        action_type = legal.get("type")
+        if self.model is None or self.torch is None:
             return self.fallback.decide(state)
         try:
-            card = self._predict_card(state, legal["cards"])
-            if card:
-                return {"type": "play", "card": card}
+            if action_type == "play" and legal.get("cards"):
+                card = self._predict_card(state, legal["cards"])
+                if card:
+                    return {"type": "play", "card": card}
+            if action_type == "bid":
+                bid = self._predict_bid(state, legal.get("bids", []))
+                if bid is None or bid in legal.get("bids", []):
+                    return {"type": "bid", "bid": bid}
+            if action_type == "trump":
+                suit = self._predict_trump(state, legal.get("suits", []))
+                if suit:
+                    return {"type": "trump", "suit": suit}
+            if action_type == "bury":
+                cards = self._predict_bury_cards(state, legal.get("count", 6))
+                if cards:
+                    return {"type": "bury", "cards": cards}
         except Exception:
             logger.exception("Transformer RL 推理失败，回退到规则策略")
         return self.fallback.decide(state)
@@ -145,21 +159,79 @@ class TransformerRLStrategy:
         if self.model_path.exists():
             checkpoint = torch.load(self.model_path, map_location=self.device)
             state_dict = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
-            self.model.load_state_dict(state_dict, strict=False)
+            model_state = self.model.state_dict()
+            compatible_state = {key: value for key, value in state_dict.items() if key in model_state and model_state[key].shape == value.shape}
+            missing_or_changed = sorted(set(model_state) - set(compatible_state))
+            self.model.load_state_dict(compatible_state, strict=False)
+            if missing_or_changed:
+                logger.warning("模型结构已变更，部分参数使用初始化值 path=%s missing_or_changed=%s", self.model_path, missing_or_changed[:8])
             logger.info("已加载 Transformer RL AI 模型 path=%s device=%s", self.model_path, self.device)
         else:
             logger.warning("未找到 Transformer RL AI 模型 path=%s，使用规则策略兜底", self.model_path)
         self.model.eval()
+
+    def _predict_bid(self, state: dict[str, Any], legal_bids: list[int]) -> int | None:
+        assert self.torch is not None and self.model is not None
+        encoded = encode_state(state)
+        cards = self.torch.tensor([encoded.card_tokens], dtype=self.torch.long, device=self.device)
+        scalars = self.torch.tensor([encoded.scalar_features], dtype=self.torch.float32, device=self.device)
+        segments = self.torch.tensor([encoded.segment_tokens], dtype=self.torch.long, device=self.device)
+        mask = self.torch.tensor(encoded.action_mask, dtype=self.torch.bool, device=self.device)
+        with self.torch.no_grad():
+            logits, _ = self.model(cards, scalars, segments)
+            logits = logits[0].masked_fill(~mask, -1e4)
+        candidate_actions = [bid_to_action(None)] + [bid_to_action(bid) for bid in legal_bids if bid in BID_ACTIONS]
+        candidate_actions = [idx for idx in candidate_actions if bool(mask[idx].item())]
+        if not candidate_actions:
+            return None
+        best_idx = max(candidate_actions, key=lambda idx: float(logits[idx].item()))
+        return action_to_bid(best_idx)
+
+    def _masked_logits(self, state: dict[str, Any]) -> tuple[Any, Any]:
+        assert self.torch is not None and self.model is not None
+        encoded = encode_state(state)
+        cards = self.torch.tensor([encoded.card_tokens], dtype=self.torch.long, device=self.device)
+        scalars = self.torch.tensor([encoded.scalar_features], dtype=self.torch.float32, device=self.device)
+        segments = self.torch.tensor([encoded.segment_tokens], dtype=self.torch.long, device=self.device)
+        mask = self.torch.tensor(encoded.action_mask, dtype=self.torch.bool, device=self.device)
+        with self.torch.no_grad():
+            logits, _ = self.model(cards, scalars, segments)
+            logits = logits[0].masked_fill(~mask, -1e4)
+        return logits, mask
+
+    def _predict_trump(self, state: dict[str, Any], legal_suits: list[str]) -> str | None:
+        logits, mask = self._masked_logits(state)
+        candidate_actions = [suit_to_action(suit) for suit in legal_suits if suit in SUIT_ACTIONS]
+        candidate_actions = [idx for idx in candidate_actions if bool(mask[idx].item())]
+        if not candidate_actions:
+            return None
+        best_idx = max(candidate_actions, key=lambda idx: float(logits[idx].item()))
+        return action_to_suit(best_idx)
+
+    def _predict_bury_cards(self, state: dict[str, Any], count: int) -> list[str]:
+        hand = list(state.get("hand", []))
+        selected: list[str] = []
+        for _ in range(min(count, len(hand))):
+            logits, _ = self._masked_logits(state)
+            legal_ids = [card_to_action(card) for card in hand if card in CARD_TO_ID]
+            if not legal_ids:
+                break
+            best_idx = max(legal_ids, key=lambda idx: float(logits[idx].item()))
+            card = CARD_VOCAB[best_idx]
+            selected.append(card)
+            hand.remove(card)
+        return selected
 
     def _predict_card(self, state: dict[str, Any], legal_cards: list[str]) -> str | None:
         assert self.torch is not None and self.model is not None
         encoded = encode_state(state)
         cards = self.torch.tensor([encoded.card_tokens], dtype=self.torch.long, device=self.device)
         scalars = self.torch.tensor([encoded.scalar_features], dtype=self.torch.float32, device=self.device)
+        segments = self.torch.tensor([encoded.segment_tokens], dtype=self.torch.long, device=self.device)
         mask = self.torch.tensor(encoded.action_mask, dtype=self.torch.bool, device=self.device)
         with self.torch.no_grad():
-            logits, _ = self.model(cards, scalars)
-            logits = logits[0].masked_fill(~mask, -1e9)
+            logits, _ = self.model(cards, scalars, segments)
+            logits = logits[0].masked_fill(~mask, -1e4)
         legal_ids = [CARD_TO_ID[c] - 1 for c in legal_cards if c in CARD_TO_ID]
         if not legal_ids:
             return None

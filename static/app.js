@@ -1,4 +1,4 @@
-﻿let roomId = localStorage.getItem('roomId') || '';
+let roomId = localStorage.getItem('roomId') || '';
 let playerId = localStorage.getItem('playerId') || '';
 let ws = null;
 let state = null;

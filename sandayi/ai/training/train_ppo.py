@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 from pathlib import Path
@@ -58,41 +58,46 @@ def main() -> None:
         cards = torch.tensor([t.card_tokens for t in transitions], dtype=torch.long)
         scalars = torch.tensor([t.scalar_features for t in transitions], dtype=torch.float32)
         masks = torch.tensor([t.action_mask for t in transitions], dtype=torch.bool)
+        segments = torch.tensor([t.segment_tokens for t in transitions], dtype=torch.long)
         actions = torch.tensor([t.action for t in transitions], dtype=torch.long)
         old_log_probs = torch.tensor([t.log_prob for t in transitions], dtype=torch.float32)
         old_values = torch.tensor([t.value for t in transitions], dtype=torch.float32)
         returns = torch.tensor([t.reward for t in transitions], dtype=torch.float32)
+        weights = torch.tensor([3.0 if t.is_banker else 1.0 for t in transitions], dtype=torch.float32)
         advantages = returns - old_values
         if len(advantages) > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        dataset = TensorDataset(cards, scalars, masks, actions, old_log_probs, returns, advantages)
+        dataset = TensorDataset(cards, scalars, masks, segments, actions, old_log_probs, returns, advantages, weights)
         loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
         model.train()
         total_loss = 0.0
         batches = 0
         for _ in range(args.epochs):
             for batch in loader:
-                card_batch, scalar_batch, mask_batch, action_batch, old_log_prob_batch, return_batch, advantage_batch = [x.to(device) for x in batch]
-                logits, values = model(card_batch, scalar_batch)
+                card_batch, scalar_batch, mask_batch, segment_batch, action_batch, old_log_prob_batch, return_batch, advantage_batch, weight_batch = [x.to(device) for x in batch]
+                logits, values = model(card_batch, scalar_batch, segment_batch)
                 valid_rows = mask_batch.gather(1, action_batch.unsqueeze(1)).squeeze(1)
                 if not bool(valid_rows.any().item()):
                     continue
                 logits = logits[valid_rows]
                 values = values[valid_rows]
                 mask_batch = mask_batch[valid_rows]
+                segment_batch = segment_batch[valid_rows]
                 action_batch = action_batch[valid_rows]
                 old_log_prob_batch = old_log_prob_batch[valid_rows]
                 return_batch = return_batch[valid_rows].clamp(-4.0, 4.0)
                 advantage_batch = advantage_batch[valid_rows].clamp(-4.0, 4.0)
+                weight_batch = weight_batch[valid_rows]
                 logits = logits.masked_fill(~mask_batch, -1e4)
                 log_probs = F.log_softmax(logits, dim=-1)
                 probs = log_probs.exp()
                 new_log_probs = log_probs.gather(1, action_batch.unsqueeze(1)).squeeze(1)
-                ratio = (new_log_probs - old_log_prob_batch).exp()
+                log_ratio = (new_log_probs - old_log_prob_batch).clamp(-20.0, 20.0)
+                ratio = log_ratio.exp()
                 unclipped = ratio * advantage_batch
                 clipped = torch.clamp(ratio, 1.0 - args.clip, 1.0 + args.clip) * advantage_batch
-                policy_loss = -torch.min(unclipped, clipped).mean()
-                value_loss = F.smooth_l1_loss(values, return_batch)
+                policy_loss = -(torch.min(unclipped, clipped) * weight_batch).sum() / weight_batch.sum()
+                value_loss = (weight_batch * F.smooth_l1_loss(values, return_batch, reduction="none")).sum() / weight_batch.sum()
                 entropy = -(probs * log_probs).masked_fill(~mask_batch, 0.0).sum(dim=-1).mean()
                 loss = policy_loss + args.value_coef * value_loss - args.entropy_coef * entropy
                 optimizer.zero_grad(set_to_none=True)
